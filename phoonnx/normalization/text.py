@@ -1,5 +1,7 @@
 """The text normalization pipeline: raw written text to speakable words."""
 import re
+import threading
+from typing import Dict
 
 from unicode_rbnf import RbnfEngine
 
@@ -8,6 +10,28 @@ from phoonnx.normalization.datetimes import _normalize_dates_and_times
 from phoonnx.normalization.numbers import _normalize_number_word
 from phoonnx.normalization.tables import CONTRACTIONS, TITLES
 from phoonnx.normalization.units import _normalize_units
+
+# ``RbnfEngine.for_language`` reads and parses the language's XML rule file (1,570 rules for English)
+# on every call: ~17 ms on a Raspberry Pi 4, paid once per clause. An engine is read-only once
+# loaded, so one per language is kept for the life of the process.
+_RBNF_ENGINES: Dict[str, RbnfEngine] = {}
+_RBNF_LOCK = threading.Lock()
+
+
+def _rbnf_engine(lang_code: str) -> RbnfEngine:
+    """The number-spelling engine for ``lang_code``, loaded once.
+
+    Raises what ``RbnfEngine.for_language`` raises (``ValueError`` for an unsupported
+    language); a failure is not remembered.
+    """
+    engine = _RBNF_ENGINES.get(lang_code)
+    if engine is None:
+        with _RBNF_LOCK:
+            engine = _RBNF_ENGINES.get(lang_code)
+            if engine is None:
+                engine = _RBNF_ENGINES[lang_code] = RbnfEngine.for_language(lang_code)
+    return engine
+
 
 def _normalize_word_hyphen_digit(text: str) -> str:
     """
@@ -90,7 +114,7 @@ def normalize(text: str, lang: str, expand_contractions: bool = True) -> str:
     words = dialog.split()
     rbnf_engine = None
     try:
-        rbnf_engine = RbnfEngine.for_language(lang_code)
+        rbnf_engine = _rbnf_engine(lang_code)
     except (ValueError, KeyError) as e:
         LOG.debug(f"RBNF engine not available for language '{lang_code}': {e}")
 
